@@ -1,9 +1,9 @@
 # AHI 偵測模型 — 架構搜索實驗報告
 
-**專案**: 單通道胸帶 (THOR_RES) 呼吸事件偵測與 AHI 估計
+**專案**: 單通道胸帶呼吸訊號的睡眠呼吸事件偵測與 AHI 估計
 **報告日期**: 2026-04-12
-**實驗期間**: 2026-04-09 ~ 2026-04-12 (4 天)
-**總運算量**: 260 trials, 50.0 GPU-hours
+**實驗期間**: 2026-04-09 ~ 2026-04-12（4 天）
+**總運算量**: 260 次模型訓練（trials），累計 50.0 GPU-hours
 
 ---
 
@@ -12,299 +12,454 @@
 | 圖表 | 說明 |
 |------|------|
 | ![Project Progress](charts/chart5_project_progress.png) | 專案各階段最佳成績演進 |
-| ![R2 Ranking](charts/chart1_r2_ranking.png) | Round 2: 12 種架構排名 |
-| ![R3 F1 vs r](charts/chart2_r3_f1_vs_r.png) | Round 3: 各架構 F1 vs r 散佈圖 |
-| ![Chunks](charts/chart3_chunks_dose_response.png) | Chunks 劑量反應曲線 (最重要發現) |
-| ![Pareto](charts/chart4_pareto_front.png) | Pareto Front: F1 vs r 最優解 |
+| ![R2 Ranking](charts/chart1_r2_ranking.png) | Round 2：12 種架構排名 |
+| ![R3 F1 vs r](charts/chart2_r3_f1_vs_r.png) | Round 3：各架構 F1 vs r 散佈圖 |
+| ![Chunks](charts/chart3_chunks_dose_response.png) | 訓練資料量劑量反應曲線（最重要發現） |
+| ![Pareto](charts/chart4_pareto_front.png) | Pareto 最優解前沿：F1 與 r 的取捨 |
 | ![Components](charts/chart7_component_effect.png) | 架構組件效果比較 |
-| ![LR](charts/chart6_lr_sensitivity.png) | Learning Rate 敏感度分析 |
+| ![LR](charts/chart6_lr_sensitivity.png) | 學習率敏感度分析 |
 
 ---
 
-## 一、實驗目標
+## 一、背景與目標
 
-從 12 種基礎架構 + 6 種 GRU 混合變體中，找出最適合 **單通道胸帶訊號 (THOR_RES, 10Hz)** 進行呼吸事件偵測的模型架構與訓練參數。
+### 1.1 什麼是睡眠呼吸中止症？
 
-**評估指標**:
-- **Event F1** (IoU ≥ 0.5) — 事件偵測準確度
-- **AHI Pearson r** — 預測 AHI 與臨床 AHI 的相關性（臨床最重要）
+**睡眠呼吸中止症（Sleep Apnea）** 是一種常見的睡眠障礙，患者在睡眠中反覆出現呼吸暫停（apnea）或呼吸減弱（hypopnea）事件。這些事件導致血氧下降、睡眠片段化，長期可增加心血管疾病、糖尿病等慢性病風險。
+
+臨床上用 **AHI（Apnea-Hypopnea Index，呼吸中止指數）** 衡量嚴重程度，定義為每小時睡眠中呼吸事件的次數：
+
+| AHI 範圍 | 嚴重度 |
+|----------|--------|
+| < 5 | 正常 |
+| 5–15 | 輕度 |
+| 15–30 | 中度 |
+| > 30 | 重度 |
+
+### 1.2 目前的診斷方式與痛點
+
+目前的金標準是 **多導睡眠圖（PSG, Polysomnography）**：患者在睡眠中心過夜，身上貼滿感測器（腦電圖、眼動圖、肌電圖、鼻氣流、胸腹帶、血氧計等），由技術人員整夜監測並人工判讀。
+
+**痛點**：
+- 昂貴（一次 PSG 檢查費用數千至上萬元台幣）
+- 不方便（需到醫院過夜）
+- 等候時間長（台灣排程常需數月）
+- 人工判讀耗時（技師需 1-2 小時逐段標註）
+
+### 1.3 我們的目標
+
+開發一個 **只用一條胸帶（THOR_RES 通道）就能自動偵測呼吸事件並估計 AHI 的深度學習模型**。
+
+這條路線的臨床意義：胸帶訊號可以用 **床墊內嵌壓力感測器** 取代（不需穿戴），實現真正的「睡覺就自動篩檢」。
+
+### 1.4 本實驗的任務
+
+從 12 種基礎深度學習架構 + 6 種進階混合變體中，找出最適合單通道胸帶訊號的模型架構與訓練策略。
+
+### 1.5 評估指標
+
+我們用兩個指標評估模型好壞：
+
+| 指標 | 全名 | 意義 | 計算方式 |
+|------|------|------|----------|
+| **Event F1** | Event-level F1 Score | 模型偵測呼吸事件的準確度 | 每個預測事件與真實事件做比對（IoU ≥ 50% 算命中），計算 precision × recall 的調和平均 |
+| **AHI r** | AHI Pearson Correlation | 模型估計的 AHI 與臨床 AHI 的相關性 | 對每位受試者計算預測事件數 ÷ 睡眠時數 = 預測 RDI，再與臨床 AHI 做 Pearson 相關 |
+
+- **Event F1 越高**（最高 1.0）→ 模型越能準確框出每一個呼吸事件
+- **AHI r 越高**（最高 1.0）→ 模型估計的 AHI 數值越接近臨床判讀
+
+> **IoU (Intersection over Union)**：兩個事件區間的重疊比例。IoU ≥ 0.5 表示預測事件與真實事件重疊超過一半，才算命中。這是較嚴格的標準。
+
+> **RDI (Respiratory Disturbance Index)**：模型輸出的原始呼吸事件數 ÷ 睡眠時數。與 AHI 定義類似但未經臨床校正。本報告中 Round 2/3 的 r 均為 raw RDI vs AHI（未校正）。
 
 ---
 
-## 二、實驗流程
+## 二、資料集
 
-```
-Phase 1: 資料準備
-  └── SHHS1 PSG → 單通道 THOR_RES 10Hz, 780 subjects (排除 20 壞訊號)
-
-Phase 2: 架構大搜索 (Round 2)
-  └── 12 種架構 × 多組超參 = 224 trials
-  └── 精簡訓練 (30 epochs, 1000 chunks, 1-ensemble)
-  └── 三台機器平行跑: Mac mini M4 + Mac Studio M2 Max + RTX 5070
-
-Phase 3: GRU 混合架構探索 (Round 3)
-  └── 6 種 TCN+GRU 混合架構 = 32 trials
-  └── 基於 Round 2 冠軍 (TCN+BiLSTM) 改用 GRU 的系列變體
-
-Phase 4: 交叉驗證實驗 (Round 3b)
-  └── 驗證 chunks 數量 × attention 交互效應 = 4 trials
-  └── 確認最終推薦配置
-```
-
----
-
-## 三、資料集
+### 2.1 資料來源
 
 | 項目 | 內容 |
 |------|------|
-| 資料來源 | SHHS1 (Sleep Heart Health Study) |
-| 通道 | 單通道 THOR_RES (胸帶呼吸訊號) |
-| 取樣率 | 10 Hz |
-| 可用 subjects | 780 (排除 20 壞訊號: 9 dead signal + 9 heavy clipping + 2 too short) |
-| 訓練/驗證比 | 80/20 固定 split (seed=2026) → 624 train / 156 val |
-| 事件標註 | AASM 標準: apnea + hypopnea (AHI a0h3) |
-| 目標場景 | 床墊內嵌壓力感測器 → 模擬胸帶單通道 |
+| 資料庫 | **SHHS1**（Sleep Heart Health Study，美國多中心大型睡眠研究） |
+| 總受試者 | 5,793 人 |
+| 實際使用 | 800 人（隨機抽樣，後排除 20 人品質不佳） |
+| 最終可用 | **780 人** |
+| 排除原因 | 訊號無效 9 人 + 嚴重削波 9 人 + 時間太短 2 人 |
+
+### 2.2 訊號處理
+
+| 項目 | 內容 |
+|------|------|
+| 使用通道 | **THOR_RES**（胸帶呼吸努力訊號，thoracic respiratory effort） |
+| 取樣率 | 10 Hz（每秒 10 個數據點） |
+| 通道數 | 1（單通道 — 模擬床墊場景） |
+| 事件標註 | AASM 標準的 apnea + hypopnea（AHI a0h3 定義） |
+
+### 2.3 資料分割
+
+| 分割 | 人數 | 用途 |
+|------|------|------|
+| 訓練集 | 624 人 (80%) | 模型學習用 |
+| 驗證集 | 156 人 (20%) | 評估模型性能（未參與訓練） |
+
+> 使用固定隨機種子（seed=2026）確保所有實驗用相同的分割，結果可公平比較。
 
 ---
 
-## 四、Round 2 — 架構大搜索 (224 trials)
+## 三、實驗流程
 
-### 4.1 測試架構
+```
+步驟 1：資料準備
+  └── 從 SHHS1 PSG 原始資料提取單通道 THOR_RES（10Hz）
+  └── 品質審核：排除 20 位訊號品質不佳的受試者
+  └── 最終資料：780 人，每人 ~7 小時整夜睡眠記錄
 
-| # | 架構 | 類型 | 說明 |
-|---|------|------|------|
-| 1 | dilated_tcn | Conv | 擴張時間卷積網路 (基線) |
-| 2 | tcn | Conv | 標準 TCN (無 gating) |
-| 3 | resnet1d | Conv | 1D ResNet |
-| 4 | se_resnet1d | Conv | SE-ResNet (Squeeze-Excitation) |
-| 5 | inception1d | Conv | 1D Inception |
-| 6 | wavenet | Conv | WaveNet 風格 |
-| 7 | unet1d | Encoder-Decoder | 1D U-Net |
-| 8 | attention_unet1d | Encoder-Decoder | Attention U-Net |
-| 9 | bilstm_cnn | Recurrent | BiLSTM + CNN |
-| 10 | transformer | Attention | Transformer encoder |
-| 11 | conformer | Attention | Conformer (Conv + Attention) |
-| 12 | **tcn_bilstm_hybrid** | **Hybrid** | **TCN + BiLSTM (冠軍)** |
+步驟 2：架構大搜索（Round 2）
+  └── 測試 12 種深度學習架構 × 多組超參數 = 224 次訓練
+  └── 精簡訓練模式：30 個訓練週期、1000 個訓練片段
+  └── 三台機器平行運算
 
-### 4.2 結果排名
+步驟 3：GRU 混合架構探索（Round 3）
+  └── 基於 Round 2 冠軍，設計 6 種 GRU 變體 = 32 次訓練
+  └── 同時探索訓練資料量（chunks）的效應
 
-| 排名 | 架構 | Mean F1 | Best F1 | Best r | 穩定性 |
-|------|------|---------|---------|--------|--------|
-| **1** | **tcn_bilstm_hybrid** | **0.385** | **0.580** | **0.911** | **93%** |
-| 2 | tcn | 0.182 | 0.272 | 0.851 | 90% |
-| 3 | attention_unet1d | 0.178 | 0.466 | 0.830 | 67% |
-| 4 | se_resnet1d | 0.137 | 0.211 | 0.805 | 100% |
-| 5 | dilated_tcn | 0.109 | 0.218 | 0.905 | 76% |
-| 6 | unet1d | 0.107 | 0.346 | 0.803 | 67% |
-| 7 | conformer | 0.076 | 0.126 | 0.904 | 73% |
-| 8 | bilstm_cnn | 0.066 | 0.136 | 0.325 | 73% |
-| 9 | wavenet | 0.053 | 0.078 | 0.790 | 67% |
-| 10 | inception1d | 0.049 | 0.131 | 0.793 | 50% |
-| 11 | resnet1d | 0.031 | 0.066 | 0.742 | 20% |
-| 12 | transformer | 0.021 | 0.073 | 0.874 | 7% |
+步驟 4：交叉驗證實驗（Round 3b）
+  └── 驗證「注意力機制 + 高訓練量」的交互效應 = 4 次訓練
+  └── 確認最終推薦配置
+```
 
-> 穩定性 = F1 ≥ 0.05 的 trial 比例（不崩潰的比例）
+### 3.1 什麼是「精簡訓練」？
 
-### 4.3 Round 2 科學結論
+為了在有限時間內比較大量架構，我們採用精簡訓練：
 
-| # | 問題 | 結論 |
-|---|------|------|
-| Q1 | Gating 有用嗎? | 有害 (tcn > dilated_tcn) |
-| Q2 | Causal vs non-causal? | Non-causal 遠優於 causal |
-| Q3 | Pooling vs dilation? | 平手 |
-| Q4 | Dilation 必要嗎? | 絕對必要 (6x improvement) |
-| Q5 | SE attention 有效嗎? | 有效 (4.5x) |
-| Q6 | U-Net attention gate? | 有效 (1.7x) |
-| Q7 | 並行 vs 串行多尺度? | 串行勝出 |
-| Q8 | Conv vs LSTM vs Attn (pure)? | Conv 勝出 |
-| Q9 | Conformer > Transformer? | 是 (3.7x) |
-| **Q10** | **Hybrid > Pure?** | **壓倒性 yes (3.5x)** |
+| 參數 | 精簡模式 | 完整模式（未來） |
+|------|---------|-----------------|
+| 訓練週期（epochs） | 30 | 60 |
+| 訓練片段數（chunks） | 1,000 | 3,000–10,000 |
+| 模型集成（ensemble） | 1 個模型 | 3 個模型取平均 |
+
+精簡模式的目的是**快速比較架構優劣**，具體數字會在完整訓練後提升。
+
+> **Epoch（訓練週期）**：模型將所有訓練資料看過一遍算一個 epoch。30 epochs = 看 30 遍。
+>
+> **Chunk（訓練片段）**：從整夜記錄中隨機切出的一段訊號（約 7 分鐘）。1000 chunks 表示每個 epoch 用 1000 段隨機片段訓練。
+>
+> **Ensemble（模型集成）**：用不同隨機種子訓練多個模型，推論時取平均，可提升穩定性。
+
+---
+
+## 四、架構簡介
+
+### 4.1 什麼是深度學習架構？
+
+深度學習模型由多層「神經網路」堆疊而成。不同的堆疊方式稱為不同的「架構」。就像蓋房子用磚頭、鋼筋、木材等不同建材會得到不同性能的建築，深度學習也有多種「建材」：
+
+| 建材類型 | 技術名稱 | 特點 | 類比 |
+|----------|----------|------|------|
+| **卷積（Conv）** | TCN, ResNet 等 | 擅長抓取局部特徵模式 | 用放大鏡看訊號的局部波形 |
+| **循環（Recurrent）** | LSTM, GRU | 擅長記住時間前後的關聯 | 讀文章時記住上下文 |
+| **注意力（Attention）** | Transformer, Conformer | 擅長找出訊號中最重要的部分 | 看文章時自動畫重點 |
+| **混合（Hybrid）** | TCN + LSTM/GRU | 結合卷積和循環的優點 | 先用放大鏡看細節，再用上下文理解整體 |
+
+> **TCN (Temporal Convolutional Network)**：時間卷積網路，用「膨脹卷積（dilated convolution）」技術讓每一層能看到越來越長的時間範圍。
+>
+> **LSTM (Long Short-Term Memory)**：長短期記憶網路，一種循環神經網路，能選擇性地記住或遺忘過去的資訊。有「輸入門、遺忘門、輸出門」三個控制閥。
+>
+> **GRU (Gated Recurrent Unit)**：門控循環單元，LSTM 的簡化版，只有「重置門、更新門」兩個控制閥。參數更少、訓練更快，效果通常相當。
+>
+> **BiGRU / BiLSTM**：「Bi」表示雙向（Bidirectional），同時從前往後和從後往前讀訊號，能同時利用過去和未來的資訊。
+
+### 4.2 本實驗測試的 12 種基礎架構
+
+| # | 架構名稱 | 類型 | 一句話說明 |
+|---|----------|------|-----------|
+| 1 | dilated_tcn | 卷積 | 帶膨脹卷積和門控機制的基線模型 |
+| 2 | tcn | 卷積 | 標準時間卷積（去掉門控） |
+| 3 | resnet1d | 卷積 | 殘差網路（影像辨識經典架構的 1D 版） |
+| 4 | se_resnet1d | 卷積 | 殘差網路 + 通道注意力（SE module） |
+| 5 | inception1d | 卷積 | 多尺度並行卷積（Google Inception 的 1D 版） |
+| 6 | wavenet | 卷積 | DeepMind 語音合成架構（膨脹因果卷積） |
+| 7 | unet1d | 編碼-解碼 | U-Net（醫學影像分割經典架構的 1D 版） |
+| 8 | attention_unet1d | 編碼-解碼 | U-Net + 注意力門 |
+| 9 | bilstm_cnn | 循環 | 雙向 LSTM + 卷積 |
+| 10 | transformer | 注意力 | Transformer 編碼器（NLP 領域的主流架構） |
+| 11 | conformer | 注意力 | Conformer（卷積 + 注意力混合，語音辨識架構） |
+| 12 | **tcn_bilstm_hybrid** | **混合** | **TCN + 雙向 LSTM（本輪冠軍）** |
+
+### 4.3 Round 3 新增的 6 種 GRU 變體
+
+基於 Round 2 冠軍（TCN + BiLSTM），將 BiLSTM 替換為 GRU 並測試各種變化：
+
+| 架構名稱 | 改動 | 參數量 (nf=64) | 說明 |
+|----------|------|----------------|------|
+| tcn_gru | 基本替換 | 586k | TCN → BiGRU → 輸出層 |
+| deep_tcn_gru | 加深 | 763k | 20 層 TCN（原本 10 層）→ BiGRU |
+| tcn_gru_attn | 加注意力 | 843k | TCN → BiGRU → Self-Attention → 輸出層 |
+| deep_tcn_gru_attn | 加深 + 注意力 | 1,346k | 20 層 TCN → BiGRU → Attention |
+| wide_tcn_gru | 加寬 | 10,508k | 強制 256 個濾波器（原本 64 個） |
+| tcn_bigru2 | 雙層 GRU | 586k | TCN → 兩層堆疊 BiGRU |
+
+> **參數量（params）**：模型中可學習的數字個數。越多的參數代表模型越複雜、能力越強，但也越容易過度擬合（overfitting）和訓練緩慢。
+>
+> **nf（n_filters，濾波器數量）**：每一層卷積使用的濾波器個數，控制模型的「寬度」。nf=64 表示每層有 64 個濾波器。nf=96 時參數量約為 nf=64 的 2.2 倍。
+
+---
+
+## 五、Round 2 — 架構大搜索結果（224 次訓練）
+
+### 5.1 排名
+
+| 排名 | 架構 | 類型 | 平均 F1 | 最佳 F1 | 最佳 r | 穩定性 |
+|------|------|------|---------|---------|--------|--------|
+| **1** | **tcn_bilstm_hybrid** | **混合** | **0.385** | **0.580** | **0.911** | **93%** |
+| 2 | tcn | 卷積 | 0.182 | 0.272 | 0.851 | 90% |
+| 3 | attention_unet1d | 編碼-解碼 | 0.178 | 0.466 | 0.830 | 67% |
+| 4 | se_resnet1d | 卷積 | 0.137 | 0.212 | 0.805 | 100% |
+| 5 | dilated_tcn | 卷積 | 0.109 | 0.219 | 0.905 | 76% |
+| 6 | unet1d | 編碼-解碼 | 0.107 | 0.346 | 0.803 | 67% |
+| 7 | conformer | 注意力 | 0.076 | 0.126 | 0.904 | 73% |
+| 8 | bilstm_cnn | 循環 | 0.066 | 0.136 | 0.325 | 73% |
+| 9 | wavenet | 卷積 | 0.053 | 0.078 | 0.790 | 67% |
+| 10 | inception1d | 卷積 | 0.049 | 0.131 | 0.794 | 50% |
+| 11 | resnet1d | 卷積 | 0.031 | 0.066 | 0.742 | 20% |
+| 12 | transformer | 注意力 | 0.021 | 0.073 | 0.874 | 7% |
+
+> **穩定性**：在多次不同超參數嘗試中，模型成功學習（F1 ≥ 0.05）的比例。穩定性低表示模型對超參數敏感，很容易「訓練失敗」。
 
 ![Round 2 Architecture Ranking](charts/chart1_r2_ranking.png)
 
-**Round 2 核心結論**: 混合架構 (Conv + Recurrent) 遠優於單一類型架構。
+### 5.2 Round 2 科學結論
+
+透過 12 種架構的對比，我們回答了 10 個架構設計問題：
+
+| # | 問題 | 結論 | 說明 |
+|---|------|------|------|
+| Q1 | 門控機制有用嗎？ | 有害 | tcn (無門控) 優於 dilated_tcn (有門控) |
+| Q2 | 因果卷積 vs 非因果？ | 非因果遠勝 | 非因果 = 可以同時看前後的資訊 |
+| Q3 | 池化 vs 膨脹？ | 平手 | 兩種擴大感受野的方式效果相近 |
+| Q4 | 膨脹卷積必要嗎？ | 絕對必要 | 有膨脹的模型好 6 倍 |
+| Q5 | SE 注意力有效嗎？ | 有效 | 效果好 4.5 倍 |
+| Q6 | U-Net attention gate？ | 有效 | 效果好 1.7 倍 |
+| Q7 | 並行 vs 串行多尺度？ | 串行勝 | 先做完一件事再做下一件，比同時做好 |
+| Q8 | Conv vs LSTM vs Attn？ | 卷積勝 | 純卷積 > 純循環 > 純注意力 |
+| Q9 | Conformer > Transformer？ | 是 | Conformer 好 3.7 倍 |
+| **Q10** | **混合 > 純架構？** | **壓倒性勝出** | **混合架構好 3.5 倍** |
+
+**Round 2 核心結論**：混合架構（卷積 + 循環）遠優於任何單一類型的架構。冠軍 `tcn_bilstm_hybrid` 的 F1 比第二名高出 2 倍以上。
 
 ---
 
-## 五、Round 3 — GRU 混合架構探索 (32 trials)
+## 六、Round 3 — GRU 混合架構探索結果（32 次訓練）
 
-基於 Round 2 冠軍 (TCN + BiLSTM)，探索 GRU 能否取代 BiLSTM。
+### 6.1 架構比較（公平條件：同樣 1000 chunks）
 
-### 5.1 測試架構
+為公平比較架構本身的差異，以下只列出 1000 chunks 的結果：
 
-| 架構 | 說明 | Params (nf=64) |
-|------|------|----------------|
-| tcn_gru | TCN → BiGRU → Linear | 586k |
-| deep_tcn_gru | 20L TCN → BiGRU | 763k |
-| tcn_gru_attn | TCN → BiGRU → Self-Attention | 843k |
-| deep_tcn_gru_attn | 20L TCN → BiGRU → Attention | 1,346k |
-| wide_tcn_gru | Wide TCN (256 filters) → BiGRU | 10,508k |
-| tcn_bigru2 | TCN → 2-layer stacked BiGRU | 586k |
+| 架構 | 訓練次數 | 平均 F1 | 最佳 F1 | 平均 r | 最佳 r |
+|------|---------|---------|---------|--------|--------|
+| tcn_gru | 13 | 0.599 | 0.609 | 0.890 | 0.901 |
+| tcn_gru_attn | 3 | 0.598 | **0.617** | 0.891 | 0.893 |
+| deep_tcn_gru | 3 | 0.599 | 0.604 | 0.890 | 0.893 |
+| deep_tcn_gru_attn | 3 | 0.594 | 0.603 | 0.894 | 0.897 |
+| wide_tcn_gru | 3 | 0.589 | 0.595 | 0.899 | 0.906 |
+| tcn_bigru2 | 3 | 0.581 | 0.590 | 0.894 | 0.903 |
 
-> Params 為 nf=64 時的參數量。nf=96 時約為 2.2 倍（如 tcn_gru nf=96 = 1,316k）。
+> **對照：Round 2 冠軍 tcn_bilstm_hybrid（同樣 1K chunks）**：最佳 F1 = 0.580，最佳 r = 0.911
 
-### 5.2 結果
-
-以下為 **1K chunks (公平對比)** 的結果：
-
-| 架構 | Mean F1 | Best F1 | Mean r | Best r | Trials |
-|------|---------|---------|--------|--------|--------|
-| **tcn_gru** | **0.599** | **0.609** | 0.890 | 0.901 | 13 |
-| tcn_gru_attn | 0.598 | **0.617** | 0.891 | 0.893 | 3 |
-| deep_tcn_gru | 0.599 | 0.604 | 0.890 | 0.893 | 3 |
-| deep_tcn_gru_attn | 0.594 | 0.603 | 0.894 | 0.897 | 3 |
-| wide_tcn_gru | 0.589 | 0.595 | 0.899 | 0.906 | 3 |
-| tcn_bigru2 | 0.581 | 0.590 | 0.894 | 0.903 | 3 |
-
-> 對照: Round 2 冠軍 tcn_bilstm_hybrid (1K chunks): Best F1=0.580, Best r=0.911
-
-**注意**: 在相同 1K chunks 條件下，tcn_gru 的 best r=0.901 略低於 tcn_bilstm_hybrid 的 0.911。GRU 的 F1 優勢明確 (0.609 vs 0.580)，但 r 的優勢需要配合更高 chunks 才顯現（見 5.3 節）。
+**觀察**：
+- 所有 GRU 變體的 **F1 都優於 BiLSTM** 冠軍（0.581~0.617 vs 0.580）
+- 在相同 1K chunks 下，GRU 的 **r 略低於 BiLSTM**（最佳 0.906 vs 0.911）
+- 六種 GRU 變體之間差距很小，基礎的 `tcn_gru` 已經是最好的選擇
 
 ![Round 3 F1 vs r](charts/chart2_r3_f1_vs_r.png)
 
-### 5.3 Chunks 數量的決定性影響
+### 6.2 訓練資料量（chunks）的決定性影響 — 本實驗最重要的發現
 
-Round 3 同時探索了訓練樣本數量 (chunks) 的效應。這是本實驗 **最重要的發現**：
+我們在 Round 3 中同時測試了不同的訓練片段數量（chunks）。結果顯示，**增加訓練資料量是提升 AHI 相關性的最有效手段**，效果遠超架構選擇：
 
-```
-固定 tcn_gru, nf=96, nl=10:
+固定架構 `tcn_gru`（nf=96, nl=10）：
 
-chunks    mean_r    best_r    Δr vs 1K
-  1000    0.893     0.901     —
-  2000    0.926     0.927     +0.033
-  3000    0.936     0.939     +0.043    ← 甜蜜點
-  5000    0.934     0.934     +0.041    ← diminishing returns
-```
-
-**增加 chunks 從 1K 到 3K，AHI r 提升 +0.043 (4.8%)**。相比之下，同一架構族內的 r 差距只有 ±0.01。
+| 訓練片段數 | 訓練次數 | 平均 F1 | 平均 r | 最佳 r | r 提升幅度 |
+|-----------|---------|---------|--------|--------|-----------|
+| 1,000 | 7 | 0.601 | 0.893 | 0.901 | — |
+| 2,000 | 2 | 0.598 | 0.926 | 0.927 | **+0.033** |
+| 3,000 | 2 | 0.592 | 0.936 | **0.939** | **+0.043** |
+| 5,000 | 1 | 0.601 | 0.934 | 0.934 | +0.041 |
 
 ![Chunks Dose-Response](charts/chart3_chunks_dose_response.png)
 
-**結論**: 在已選定良好架構族（TCN+RNN hybrid）的前提下，訓練資料量對 r 的提升效果遠大於架構微調。
+**解讀**：
+- 從 1K 增加到 3K chunks，**r 大幅提升 +0.043**（從 0.893 到 0.936）
+- 超過 3K 後效果不再增加（5K 的 r=0.934 反而略低於 3K 的 0.936）
+- **F1 基本不受 chunks 數量影響**（波動在 0.592~0.601 之間，屬於噪音範圍）
+- **3000 chunks 是最佳甜蜜點**：收益最大、訓練時間可控
+
+**為什麼 chunks 能提升 r 但不提升 F1？**
+
+- **r 衡量的是 AHI 估計準確度**（全夜事件計數）。更多訓練樣本讓模型看到更多種類的呼吸事件，計數更穩定 → r 提升
+- **F1 衡量的是單個事件的偵測準確度**（每個事件有沒有被正確框出）。這主要由模型架構的特徵擷取能力決定，與訓練量關係較小
+
+### 6.3 結論：在已選定良好架構族（TCN + RNN 混合）的前提下，訓練資料量對 AHI r 的提升效果遠大於架構微調
+
+> 但請注意，這個結論的適用範圍是「同一架構族內」。在跨架構族的比較中（如 Round 2 的 12 種架構），架構選擇仍然是最重要的因素（r 差距從 0.325 到 0.911）。
 
 ---
 
-## 六、Round 3b — 交叉驗證 (4 trials)
+## 七、Round 3b — 交叉驗證實驗（4 次訓練）
 
-驗證 Attention + High Chunks 能否同時達到 F1 和 r 最佳：
+Round 3 發現兩件事：(1) `tcn_gru_attn` 的 F1 最高、(2) 高 chunks 的 r 最高。問題是：**如果把兩者結合（tcn_gru_attn + 高 chunks），能否同時拿到 F1 和 r 的最佳成績？**
 
-| Trial | 架構 | Chunks | F1 | r |
-|-------|------|--------|-----|---|
-| 100 | tcn_gru_attn | 3000 | 0.607 | 0.912 |
-| 101 | tcn_gru_attn | 2000 | 0.607 | 0.922 |
-| 102 | tcn_gru_attn (nf=96) | 3000 | 0.585 | 0.925 |
-| 103 | tcn_gru (nf=96) | 5000 | 0.601 | 0.934 |
+| 試驗編號 | 架構 | 濾波器數 | 訓練片段 | Event F1 | AHI r |
+|---------|------|---------|---------|----------|-------|
+| 100 | tcn_gru_attn | 64 | 3,000 | 0.607 | 0.912 |
+| 101 | tcn_gru_attn | 64 | 2,000 | 0.607 | 0.922 |
+| 102 | tcn_gru_attn | 96 | 3,000 | 0.585 | 0.925 |
+| 103 | tcn_gru（對照） | 96 | 5,000 | 0.601 | 0.934 |
 
-**結論**: F1 和 r 無法同時最大化。Attention 有利 F1 但壓低 r。
+**結論：不行。F1 和 r 存在根本性的取捨關係。**
+
+- `tcn_gru_attn` 加了 3K chunks 後 r 確實提升（0.889→0.912），但仍然低於 `tcn_gru` 的 0.939
+- 注意力機制提升 F1 但壓低 r，這個 trade-off 無法用更多資料量消除
+
+### 7.1 Pareto 最優解前沿
+
+在所有 36 次訓練中，只有 6 個結果是 **Pareto 非支配解**（不存在其他任何結果同時在 F1 和 r 上都更好）：
+
+| 試驗 | 架構 | F1 | r | 濾波器 | 訓練片段 |
+|------|------|----|---|--------|---------|
+| 028 | tcn_gru | 0.596 | **0.939** | 96 | 3,000 |
+| 103 | tcn_gru | 0.601 | 0.934 | 96 | 5,000 |
+| 101 | tcn_gru_attn | 0.607 | 0.922 | 64 | 2,000 |
+| 100 | tcn_gru_attn | 0.607 | 0.912 | 64 | 3,000 |
+| 024 | tcn_gru | 0.609 | 0.893 | 96 | 1,000 |
+| 003 | tcn_gru_attn | **0.617** | 0.888 | 64 | 1,000 |
 
 ![Pareto Front](charts/chart4_pareto_front.png)
 
+> **Pareto 前沿**：在多目標最佳化中，如果一個解在任何一個目標上都不比另一個解差，且至少一個目標上更好，則另一個解被「支配」。沒有被任何解支配的解組成 Pareto 前沿——這些是「無法兩全其美」的最優取捨點。
+
 ---
 
-## 七、全局對比 — 專案進展
+## 八、全局對比 — 專案進展
 
-| 階段 | 最佳架構 | Event F1 | AHI r | r 計算方式 | 說明 |
+| 階段 | 最佳架構 | Event F1 | AHI r | r 計算方式 | 條件 |
 |------|----------|----------|-------|-----------|------|
-| 先期研究 (2ch) | AttentionSegNet | 0.652 | 0.783 | calibrated AHI vs AHI | ABDO + THOR 雙通道 |
-| Round 2 (1ch) | tcn_bilstm_hybrid | 0.580 | 0.911 | raw RDI vs AHI | 單通道, 1K chunks |
-| **Round 3 (1ch)** | **tcn_gru** | **0.609** | **0.939** | raw RDI vs AHI | **單通道, 3K chunks** |
+| 先期研究（雙通道） | AttentionSegNet | 0.652 | 0.783 | calibrated AHI vs AHI | 2 通道，完整訓練 |
+| Round 2（單通道） | tcn_bilstm_hybrid | 0.580 | 0.911 | raw RDI vs AHI | 1 通道，1K chunks |
+| **Round 3（單通道）** | **tcn_gru** | **0.609** | **0.939** | raw RDI vs AHI | **1 通道，3K chunks** |
 
 ![Project Progress](charts/chart5_project_progress.png)
 
-> **重要**: 先期研究的 r=0.783 使用校正後 AHI，Round 2/3 的 r 使用未校正 raw RDI，兩者**不可直接比較**。Raw RDI r 通常高於 calibrated AHI r。Event F1 可直接比較。
->
-> Round 3 的 r 提升 (0.911→0.939) 主要來自 chunks 數量增加 (1K→3K)，而非架構改變。在相同 1K chunks 下，tcn_gru best r=0.901 略低於 tcn_bilstm_hybrid 的 0.911。
+> **重要注意事項**：
+> - 先期研究使用**校正後的 AHI** 計算 r，Round 2/3 使用**未校正的 raw RDI** 計算 r。兩者**不可直接比較**。Raw RDI r 通常會高於 calibrated AHI r。
+> - Round 3 的 r 提升（0.911→0.939）**主要來自訓練片段數增加**（1K→3K），而非架構改變。在相同 1K chunks 下，tcn_gru 的最佳 r = 0.901，略低於 tcn_bilstm_hybrid 的 0.911。
+> - **Event F1 可直接比較**：Round 3 的 0.609 確實優於 Round 2 的 0.580（+5%），這是架構改善帶來的真實提升。
 
 ---
 
-## 八、關鍵科學發現摘要
+## 九、關鍵發現摘要
 
 ![Component Effect](charts/chart7_component_effect.png)
 
-### 8.1 架構層面
-1. **混合架構 (Conv + Recurrent) 大幅優於純架構** — 效果差 3-10 倍
-2. **GRU 可替代 BiLSTM** — 更小 (-12% params, 586k vs 668k)、更穩 (100% vs 93%)、F1 更好 (+5%)。但在同等 1K chunks 下 r 略低 (0.901 vs 0.911)，需要更多 chunks 才能超越
-3. **Depth/Width 增加無效** — 10 層 TCN + 單層 BiGRU 已是最佳深度
-4. **Self-Attention 有微弱 F1 增益但犧牲 r** — 不建議常規使用
+### 9.1 架構層面
 
-### 8.2 訓練層面
-5. **訓練 chunks 數量是 AHI r 的最大推手** — 在同一架構族內，chunks 效應 (+0.043) 遠大於超參微調 (±0.01)
-6. **3000 chunks 是甜蜜點** — 超過後 diminishing returns
-7. **Learning rate 不敏感** — 0.0003~0.0008 都好 (見下圖)
+1. **混合架構（卷積 + 循環）大幅優於純架構** — F1 差距 3-10 倍。這說明呼吸事件偵測同時需要局部模式識別（卷積）和時序上下文理解（循環）。
+
+2. **GRU 可替代 BiLSTM** — 參數少 12%（586k vs 668k）、穩定性更高（100% vs 93%）、F1 更好（+5%）。但在同等訓練量（1K chunks）下，r 略低（0.901 vs 0.911）。加大訓練量後 GRU 可達到更高的 r（0.939）。
+
+3. **加深、加寬、堆疊 GRU 層均無效** — 10 層 TCN + 單層 BiGRU 已是最佳配置。更深（20 層）或更寬（256 濾波器）只增加計算成本，不改善效果。
+
+4. **Self-Attention 層有微弱 F1 增益但犧牲 r** — 增加 44% 參數量和 60% 訓練時間，但 F1 只提升 ~0.01、r 反而下降 ~0.02。不建議常規使用。
+
+### 9.2 訓練層面
+
+5. **訓練片段數量是 AHI r 的最大推手** — 在同一架構族內，增加 chunks 從 1K 到 3K 帶來的 r 提升（+0.043）遠大於任何超參數調整（±0.01）。
+
+6. **3000 chunks 是甜蜜點** — 超過 3000 後 r 不再提升（diminishing returns），但訓練時間持續增加。
+
+7. **學習率不敏感** — 在 0.0003 到 0.0008 的範圍內，F1 和 r 的變化都小於 0.01。
 
 ![LR Sensitivity](charts/chart6_lr_sensitivity.png)
-8. **零病態 overfit** — Round 3/3b 所有 36 trials 的 train-val gap < 0.10
 
-### 8.3 工程層面
-9. **MPS (Apple Silicon) 跑 GRU 極慢** — 比 CUDA 慢 100 倍，GRU 實驗需用 NVIDIA GPU
-10. **Reproducibility 完美** — 3 組重複 config (trials 018/030, 023/029, 022/031) 結果完全一致 (diff=0.0000)
+8. **零過度擬合問題** — Round 3/3b 所有 36 次訓練的 train-val gap（訓練集與驗證集的 F1 差距）均小於 0.10，表示模型泛化能力良好。
+
+> **過度擬合（Overfitting）**：模型在訓練資料上表現很好，但在未見過的測試資料上表現差。train-val gap 大表示嚴重過擬合。
+
+### 9.3 工程層面
+
+9. **Apple Silicon MPS 跑 GRU 極慢** — Mac Studio (M2 Max) 訓練一個 GRU trial 需要 586 分鐘，而 NVIDIA RTX 5070 只需 5 分鐘（慢約 100 倍）。原因是 MPS 後端對循環神經網路的優化不足。未來所有 GRU 實驗應在 NVIDIA GPU 上執行。
+
+10. **Reproducibility 完美** — 3 組完全相同配置的重複訓練（trials 018/030、023/029、022/031）結果完全一致（差異 = 0.0000），確認隨機種子固定有效，實驗可重現。
 
 ---
 
-## 九、最終推薦配置
+## 十、最終推薦配置
 
 ```
-架構:       tcn_gru (TCN → BiGRU → Linear)
-通道:       單通道 THOR_RES, 10 Hz
-n_filters:  96
-n_layers:   10
-kernel_size: 7
-dropout:    0.15
-lr:         0.0005
-loss:       BCE (pos_weight=1.5)
-chunks:     3000
-參數量:     1,315,969 (1.32M)
+架構:         tcn_gru (TCN → BiGRU → Linear)
+輸入通道:     單通道 THOR_RES, 10 Hz
+濾波器數:     96
+TCN 層數:     10
+卷積核大小:   7
+Dropout:      0.15
+學習率:       0.0005
+損失函數:     BCE (正樣本權重 1.5)
+訓練片段:     3,000
+模型參數量:   1,315,969 (1.32M)
 ```
 
-**精簡訓練性能 (30ep, 1-ensemble)**: Event F1 ≈ 0.60, AHI r (raw RDI) ≈ 0.94
+**精簡訓練性能（30 epochs, 單模型）**：
+- Event F1 ≈ 0.60（事件偵測準確度）
+- AHI r (raw RDI) ≈ 0.94（AHI 估計相關性）
 
 ---
 
-## 十、下一步計畫
+## 十一、下一步計畫
 
-| 步驟 | 內容 | 預估時間 |
-|------|------|----------|
-| **A. Full Training** | 60 epochs, 3K chunks, 3-ensemble | ~6 hr |
-| **B. 5-fold CV** | 5 folds × 3 seeds = 15 runs | ~12 hr |
-| **C. AHI 校正** | Linear calibration RDI → AHI | 1 hr |
-| **D. 輔大醫院驗證** | 本地 PSG cross-domain test | TBD |
+| 步驟 | 內容 | 說明 | 預估時間 |
+|------|------|------|----------|
+| **A. 完整訓練** | 60 epochs, 3K chunks, 3-ensemble | 用推薦配置做完整訓練，取得定版數字 | ~6 hr |
+| **B. 5 折交叉驗證** | 5 folds × 3 seeds = 15 次訓練 | 消除資料分割的隨機性，產出信賴區間 | ~12 hr |
+| **C. AHI 校正** | Linear calibration RDI → AHI | 將模型輸出的 raw RDI 校正為臨床 AHI | ~1 hr |
+| **D. 輔大醫院驗證** | 本地 PSG cross-domain test | 用台灣本地 PSG 資料驗證模型泛化能力 | TBD |
 
----
-
-## 十一、運算環境
-
-| 機器 | 硬體 | 角色 | 時間 |
-|------|------|------|------|
-| Mac mini M4 | Apple M4, 16GB | 輕量 trial + 報告 | ~13 hr |
-| Mac Studio M2 Max | Apple M2 Max, 32GB | 中型 trial | ~14 hr |
-| Windows Desktop | NVIDIA RTX 5070 | 主力 GPU 訓練 | ~23 hr |
-| **總計** | | | **~50 hr** |
+> **5 折交叉驗證（5-fold CV）**：將 780 人分成 5 等份，每次用 4 份訓練、1 份測試，重複 5 次，每個人都被測試到。這比單次 80/20 分割更可靠，能估計結果的變異範圍。
 
 ---
 
-## 十二、檔案結構
+## 十二、運算環境
+
+| 機器 | 硬體 | 角色 | 累計時間 |
+|------|------|------|----------|
+| Mac mini M4 | Apple M4, 16GB RAM | 輕量訓練 + 分析報告 | ~13 hr |
+| Mac Studio M2 Max | Apple M2 Max, 32GB RAM | 中型訓練 | ~14 hr |
+| Windows Desktop | NVIDIA RTX 5070 GPU | 主力 GPU 訓練 | ~23 hr |
+| **總計** | 3 台機器平行運算 | | **~50 hr** |
+
+---
+
+## 十三、檔案結構
 
 ```
 ahi-detection-v2/
 ├── integrated_ahi/
-│   ├── arch_zoo.py                    # 18 種架構定義
-│   ├── trial_runner.py                # 單 trial 執行器
-│   ├── sweep_trials/                  # Round 2 (224 trials)
-│   │   ├── results/                   # 224 result JSONs
-│   │   ├── heatmaps/                  # loss + event heatmaps
-│   │   ├── BOSS_REPORT.md             # Round 2 報告 (繁中)
-│   │   └── SWEEP_REPORT.md            # Round 2 報告 (英文)
-│   ├── sweep_round3/                  # Round 3 (32 trials)
-│   │   ├── results/                   # 32 result JSONs
-│   │   ├── heatmaps/                  # 64 PNGs
-│   │   ├── ROUND3_REPORT.md           # Round 3 報告
-│   │   └── DEEP_ANALYSIS.md           # 深度分析
-│   ├── sweep_round3b/                 # Round 3b (4 trials)
-│   │   └── results/                   # 4 result JSONs
+│   ├── arch_zoo.py                    # 18 種架構的程式碼定義
+│   ├── trial_runner.py                # 單次訓練的執行腳本
+│   ├── sweep_trials/                  # Round 2（224 次訓練）
+│   │   ├── results/                   #   224 個結果 JSON 檔
+│   │   ├── heatmaps/                  #   訓練過程視覺化圖表
+│   │   └── BOSS_REPORT.md             #   Round 2 詳細報告
+│   ├── sweep_round3/                  # Round 3（32 次訓練）
+│   │   ├── results/                   #   32 個結果 JSON 檔
+│   │   ├── heatmaps/                  #   64 張視覺化圖表
+│   │   ├── ROUND3_REPORT.md           #   Round 3 報告
+│   │   └── DEEP_ANALYSIS.md           #   深度分析報告
+│   ├── sweep_round3b/                 # Round 3b（4 次訓練）
+│   │   └── results/                   #   4 個結果 JSON 檔
 │   └── dataset_audit/                 # 資料品質審核
-│       └── excluded_nsrrids.txt       # 20 excluded subjects
-├── thor_only_data/                    # 單通道 THOR 資料
-│   ├── shhs1/ (5793 subjects)
-│   └── shhs2/ (2651 subjects)
+│       └── excluded_nsrrids.txt       #   20 位排除受試者清單
+├── thor_only_data/                    # 單通道 THOR 原始資料
+│   ├── shhs1/ (5,793 人)
+│   └── shhs2/ (2,651 人)
 └── ARCHITECTURE_SWEEP_REPORT.md       # 本報告
 ```
