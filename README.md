@@ -9,15 +9,78 @@
 
 ## 圖表總覽
 
-| 圖表 | 說明 |
-|------|------|
-| ![Project Progress](charts/chart5_project_progress.png) | 專案各階段最佳成績演進 |
-| ![R2 Ranking](charts/chart1_r2_ranking.png) | Round 2：12 種架構排名 |
-| ![R3 F1 vs r](charts/chart2_r3_f1_vs_r.png) | Round 3：各架構 F1 vs r 散佈圖 |
-| ![Chunks](charts/chart3_chunks_dose_response.png) | 訓練資料量劑量反應曲線（最重要發現） |
-| ![Pareto](charts/chart4_pareto_front.png) | Pareto 最優解前沿：F1 與 r 的取捨 |
-| ![Components](charts/chart7_component_effect.png) | 架構組件效果比較 |
-| ![LR](charts/chart6_lr_sensitivity.png) | 學習率敏感度分析 |
+### 圖 1：專案進展
+
+![Project Progress](charts/chart5_project_progress.png)
+*▲ 圖 1：藍色=事件偵測(F1)，紅色=AHI 估計(r)。注意 r 值跨階段不可直接比較（見黃色警告）。*
+
+**怎麼看**：藍色柱 = 事件偵測準確度（Event F1），紅色柱 = AHI 估計相關性（AHI r）。柱子越高越好。三組柱子代表三個實驗階段的最佳成績。
+
+**重點**：Event F1 從 0.580 進步到 0.609（+5%），這是架構改善帶來的真實提升。但 AHI r 的進步（0.911→0.939）主要來自訓練資料量增加，且因為計算方式不同，不能跨階段直接比較（見圖中黃色警告框）。
+
+---
+
+### 圖 2：Round 2 架構排名
+
+![R2 Ranking](charts/chart1_r2_ranking.png)
+
+**怎麼看**：12 種架構按平均 F1 排序。藍色長條 = 多次訓練的平均分數，紅色圓點 = 單次最佳分數。右側標籤顯示架構類型。
+
+**重點**：冠軍 `tcn_bilstm_hybrid`（混合型）大幅領先——平均 F1 比第二名高出 2 倍。所有表現好的架構都使用「膨脹卷積」技術，而純 Transformer / 純 ResNet 幾乎全軍覆沒。
+
+---
+
+### 圖 3：Round 3 各架構散佈圖
+
+![R3 F1 vs r](charts/chart2_r3_f1_vs_r.png)
+
+**怎麼看**：每個點 = 一次模型訓練。橫軸 = AHI 估計準確度（越右越好），縱軸 = 事件偵測準確度（越上越好）。理想情況是在右上角。不同顏色代表不同架構。黑色星星 = Round 2 冠軍的位置。
+
+**重點**：綠色點（tcn_gru）散佈最廣是因為包含不同 chunks 數量的測試。右上方的綠色點（高 r）都是使用較多訓練資料的結果。紅色點（tcn_gru_attn）的 F1 最高但 r 不如綠色。
+
+---
+
+### 圖 4：訓練資料量劑量反應曲線（最重要發現）
+
+![Chunks Dose-Response](charts/chart3_chunks_dose_response.png)
+*▲ 圖 4：紅線(AHI r)急升至 3K 後趨平，藍線(F1)幾乎不變。結論：3K chunks 是最佳甜蜜點。*
+
+**怎麼看**：橫軸 = 訓練片段數量（模型每輪看到多少段訊號），紅線 = AHI 相關性（左軸），藍線 = 事件偵測 F1（右軸）。
+
+**重點**：紅線急劇上升（+4.3%），說明增加訓練資料量能顯著提升 AHI 估計準確度。但到 3000 後就不再上升（diminishing returns）。同時藍線幾乎水平（F1 不變），說明事件偵測準確度不受訓練資料量影響。**這是本實驗最重要的發現。**
+
+---
+
+### 圖 5：Pareto 最優解前沿
+
+![Pareto Front](charts/chart4_pareto_front.png)
+*▲ 圖 5：大點+虛線=最優取捨線。灰點=被支配的次優解。沿虛線往右=更好的 AHI 估計，往上=更好的事件偵測。*
+
+**怎麼看**：與圖 3 相同的座標系。灰色小點 = 被其他解支配的「次優」結果。彩色大點 + 虛線 = Pareto 前沿（最優取捨線）——沿著這條線，提升一個指標就必須犧牲另一個。
+
+**重點**：從右下到左上，我們可以選擇「重視 AHI 估計」或「重視事件偵測」，但無法同時最優化兩者。右下角的 tcn_gru + 3K chunks（r=0.939）適合臨床 AHI 估計場景；左上角的 tcn_gru_attn（F1=0.617）適合事件標記場景。
+
+---
+
+### 圖 6：架構組件效果比較
+
+![Component Effect](charts/chart7_component_effect.png)
+*▲ 圖 6：以基礎 tcn_gru 為基準（綠色虛線），綠字=改善，紅字=退步。結論：加複雜度沒有幫助。*
+
+**怎麼看**：以基礎 `tcn_gru` 為基準（綠色虛線），分別加上不同組件後 F1 和 r 的變化。每根柱子上方的數字 = 相對基準的增減。綠色 = 改善，紅色 = 退步。
+
+**重點**：所有「加法」（加 Attention、加深、加寬、加雙層 GRU）都沒有帶來實質改善。最簡單的基礎 `tcn_gru` 反而是最好或並列最好的。**複雜度 ≠ 效果。**
+
+---
+
+### 圖 7：學習率敏感度分析
+
+![LR Sensitivity](charts/chart6_lr_sensitivity.png)
+*▲ 圖 7：紅色陰影帶極窄（r 只變化 0.008），表示學習率對結果幾乎沒影響，不需精心調整。*
+
+**怎麼看**：橫軸 = 學習率（控制模型學習速度的超參數），紅線 = AHI r，藍線 = Event F1。紅色陰影區域 = r 值的全部變化範圍。
+
+**重點**：紅色陰影帶非常窄（r 只變化 0.008），說明學習率在 0.0001~0.0008 範圍內對結果影響很小。這是好消息——不需要精心調整學習率，隨便選一個都差不多。
 
 ---
 
@@ -227,6 +290,7 @@
 > **穩定性**：在多次不同超參數嘗試中，模型成功學習（F1 ≥ 0.05）的比例。穩定性低表示模型對超參數敏感，很容易「訓練失敗」。
 
 ![Round 2 Architecture Ranking](charts/chart1_r2_ranking.png)
+*▲ 圖 2：12 種架構按 F1 排名。藍色長條=平均分，紅點=最佳分。混合型（Hybrid）冠軍遙遙領先。*
 
 ### 5.2 Round 2 科學結論
 
@@ -272,6 +336,7 @@
 - 六種 GRU 變體之間差距很小，基礎的 `tcn_gru` 已經是最好的選擇
 
 ![Round 3 F1 vs r](charts/chart2_r3_f1_vs_r.png)
+*▲ 圖 3：每個點=一次訓練。右上角=最好。綠色(tcn_gru)散佈最廣因含不同 chunks 數量的測試。*
 
 ### 6.2 訓練資料量（chunks）的決定性影響 — 本實驗最重要的發現
 
@@ -287,6 +352,7 @@
 | 5,000 | 1 | 0.601 | 0.934 | 0.934 | +0.041 |
 
 ![Chunks Dose-Response](charts/chart3_chunks_dose_response.png)
+*▲ 圖 4：紅線(AHI r)急升至 3K 後趨平，藍線(F1)幾乎不變。結論：3K chunks 是最佳甜蜜點。*
 
 **解讀**：
 - 從 1K 增加到 3K chunks，**r 大幅提升 +0.043**（從 0.893 到 0.936）
@@ -335,6 +401,7 @@ Round 3 發現兩件事：(1) `tcn_gru_attn` 的 F1 最高、(2) 高 chunks 的 
 | 003 | tcn_gru_attn | **0.617** | 0.888 | 64 | 1,000 |
 
 ![Pareto Front](charts/chart4_pareto_front.png)
+*▲ 圖 5：大點+虛線=最優取捨線。灰點=被支配的次優解。沿虛線往右=更好的 AHI 估計，往上=更好的事件偵測。*
 
 > **Pareto 前沿**：在多目標最佳化中，如果一個解在任何一個目標上都不比另一個解差，且至少一個目標上更好，則另一個解被「支配」。沒有被任何解支配的解組成 Pareto 前沿——這些是「無法兩全其美」的最優取捨點。
 
@@ -349,6 +416,7 @@ Round 3 發現兩件事：(1) `tcn_gru_attn` 的 F1 最高、(2) 高 chunks 的 
 | **Round 3（單通道）** | **tcn_gru** | **0.609** | **0.939** | raw RDI vs AHI | **1 通道，3K chunks** |
 
 ![Project Progress](charts/chart5_project_progress.png)
+*▲ 圖 1：藍色=事件偵測(F1)，紅色=AHI 估計(r)。注意 r 值跨階段不可直接比較（見黃色警告）。*
 
 > **重要注意事項**：
 > - 先期研究使用**校正後的 AHI** 計算 r，Round 2/3 使用**未校正的 raw RDI** 計算 r。兩者**不可直接比較**。Raw RDI r 通常會高於 calibrated AHI r。
@@ -360,6 +428,7 @@ Round 3 發現兩件事：(1) `tcn_gru_attn` 的 F1 最高、(2) 高 chunks 的 
 ## 九、關鍵發現摘要
 
 ![Component Effect](charts/chart7_component_effect.png)
+*▲ 圖 6：以基礎 tcn_gru 為基準（綠色虛線），綠字=改善，紅字=退步。結論：加複雜度沒有幫助。*
 
 ### 9.1 架構層面
 
@@ -380,6 +449,7 @@ Round 3 發現兩件事：(1) `tcn_gru_attn` 的 F1 最高、(2) 高 chunks 的 
 7. **學習率不敏感** — 在 0.0003 到 0.0008 的範圍內，F1 和 r 的變化都小於 0.01。
 
 ![LR Sensitivity](charts/chart6_lr_sensitivity.png)
+*▲ 圖 7：紅色陰影帶極窄（r 只變化 0.008），表示學習率對結果幾乎沒影響，不需精心調整。*
 
 8. **零過度擬合問題** — Round 3/3b 所有 36 次訓練的 train-val gap（訓練集與驗證集的 F1 差距）均小於 0.10，表示模型泛化能力良好。
 
