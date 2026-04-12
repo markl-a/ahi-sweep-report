@@ -23,7 +23,7 @@
 
 ## 一、實驗目標
 
-從 18 種深度學習架構中，找出最適合 **單通道胸帶訊號 (THOR_RES, 10Hz)** 進行呼吸事件偵測的模型架構與訓練參數。
+從 12 種基礎架構 + 6 種 GRU 混合變體中，找出最適合 **單通道胸帶訊號 (THOR_RES, 10Hz)** 進行呼吸事件偵測的模型架構與訓練參數。
 
 **評估指標**:
 - **Event F1** (IoU ≥ 0.5) — 事件偵測準確度
@@ -132,8 +132,8 @@ Phase 4: 交叉驗證實驗 (Round 3b)
 
 ### 5.1 測試架構
 
-| 架構 | 說明 | Params |
-|------|------|--------|
+| 架構 | 說明 | Params (nf=64) |
+|------|------|----------------|
 | tcn_gru | TCN → BiGRU → Linear | 586k |
 | deep_tcn_gru | 20L TCN → BiGRU | 763k |
 | tcn_gru_attn | TCN → BiGRU → Self-Attention | 843k |
@@ -141,16 +141,24 @@ Phase 4: 交叉驗證實驗 (Round 3b)
 | wide_tcn_gru | Wide TCN (256 filters) → BiGRU | 10,508k |
 | tcn_bigru2 | TCN → 2-layer stacked BiGRU | 586k |
 
+> Params 為 nf=64 時的參數量。nf=96 時約為 2.2 倍（如 tcn_gru nf=96 = 1,316k）。
+
 ### 5.2 結果
 
-| 架構 | Mean F1 | Best F1 | Mean r | Best r |
-|------|---------|---------|--------|--------|
-| **tcn_gru** | **0.598** | 0.609 | **0.900** | **0.939** |
-| tcn_gru_attn | 0.598 | **0.617** | 0.891 | 0.893 |
-| deep_tcn_gru | 0.599 | 0.604 | 0.890 | 0.893 |
-| deep_tcn_gru_attn | 0.594 | 0.603 | 0.894 | 0.897 |
-| wide_tcn_gru | 0.589 | 0.595 | 0.900 | 0.907 |
-| tcn_bigru2 | 0.582 | 0.590 | 0.894 | 0.903 |
+以下為 **1K chunks (公平對比)** 的結果：
+
+| 架構 | Mean F1 | Best F1 | Mean r | Best r | Trials |
+|------|---------|---------|--------|--------|--------|
+| **tcn_gru** | **0.599** | **0.609** | 0.890 | 0.901 | 13 |
+| tcn_gru_attn | 0.598 | **0.617** | 0.891 | 0.893 | 3 |
+| deep_tcn_gru | 0.599 | 0.604 | 0.890 | 0.893 | 3 |
+| deep_tcn_gru_attn | 0.594 | 0.603 | 0.894 | 0.897 | 3 |
+| wide_tcn_gru | 0.589 | 0.595 | 0.899 | 0.906 | 3 |
+| tcn_bigru2 | 0.581 | 0.590 | 0.894 | 0.903 | 3 |
+
+> 對照: Round 2 冠軍 tcn_bilstm_hybrid (1K chunks): Best F1=0.580, Best r=0.911
+
+**注意**: 在相同 1K chunks 條件下，tcn_gru 的 best r=0.901 略低於 tcn_bilstm_hybrid 的 0.911。GRU 的 F1 優勢明確 (0.609 vs 0.580)，但 r 的優勢需要配合更高 chunks 才顯現（見 5.3 節）。
 
 ![Round 3 F1 vs r](charts/chart2_r3_f1_vs_r.png)
 
@@ -168,11 +176,11 @@ chunks    mean_r    best_r    Δr vs 1K
   5000    0.934     0.934     +0.041    ← diminishing returns
 ```
 
-**增加 chunks 從 1K 到 3K，AHI r 提升 +0.043 (4.8%)**。相比之下，架構選擇的 r 差距只有 ±0.01。
+**增加 chunks 從 1K 到 3K，AHI r 提升 +0.043 (4.8%)**。相比之下，同一架構族內的 r 差距只有 ±0.01。
 
 ![Chunks Dose-Response](charts/chart3_chunks_dose_response.png)
 
-**結論**: 訓練資料量 > 架構選擇。
+**結論**: 在已選定良好架構族（TCN+RNN hybrid）的前提下，訓練資料量對 r 的提升效果遠大於架構微調。
 
 ---
 
@@ -195,15 +203,17 @@ chunks    mean_r    best_r    Δr vs 1K
 
 ## 七、全局對比 — 專案進展
 
-| 階段 | 最佳架構 | Event F1 | AHI r | 說明 |
-|------|----------|----------|-------|------|
-| Phase 2 基線 (2ch) | AttentionSegNet | 0.652 | 0.783 | ABDO + THOR 雙通道 |
-| Round 2 (1ch) | tcn_bilstm_hybrid | 0.580 | 0.911 | 單通道精簡訓練 |
-| **Round 3 (1ch)** | **tcn_gru** | **0.609** | **0.939** | **當前最佳** |
+| 階段 | 最佳架構 | Event F1 | AHI r | r 計算方式 | 說明 |
+|------|----------|----------|-------|-----------|------|
+| 先期研究 (2ch) | AttentionSegNet | 0.652 | 0.783 | calibrated AHI vs AHI | ABDO + THOR 雙通道 |
+| Round 2 (1ch) | tcn_bilstm_hybrid | 0.580 | 0.911 | raw RDI vs AHI | 單通道, 1K chunks |
+| **Round 3 (1ch)** | **tcn_gru** | **0.609** | **0.939** | raw RDI vs AHI | **單通道, 3K chunks** |
 
 ![Project Progress](charts/chart5_project_progress.png)
 
-> 注意: Phase 2 的 r=0.783 是 calibrated AHI vs AHI; Round 2/3 的 r 是 raw RDI vs AHI (未校正)，不可直接比較。F1 可直接比較。
+> **重要**: 先期研究的 r=0.783 使用校正後 AHI，Round 2/3 的 r 使用未校正 raw RDI，兩者**不可直接比較**。Raw RDI r 通常高於 calibrated AHI r。Event F1 可直接比較。
+>
+> Round 3 的 r 提升 (0.911→0.939) 主要來自 chunks 數量增加 (1K→3K)，而非架構改變。在相同 1K chunks 下，tcn_gru best r=0.901 略低於 tcn_bilstm_hybrid 的 0.911。
 
 ---
 
@@ -213,21 +223,21 @@ chunks    mean_r    best_r    Δr vs 1K
 
 ### 8.1 架構層面
 1. **混合架構 (Conv + Recurrent) 大幅優於純架構** — 效果差 3-10 倍
-2. **GRU 優於 BiLSTM** — 更小 (-27% params)、更穩 (100% vs 93%)、更好 (F1 +5%, r +3%)
+2. **GRU 可替代 BiLSTM** — 更小 (-12% params, 586k vs 668k)、更穩 (100% vs 93%)、F1 更好 (+5%)。但在同等 1K chunks 下 r 略低 (0.901 vs 0.911)，需要更多 chunks 才能超越
 3. **Depth/Width 增加無效** — 10 層 TCN + 單層 BiGRU 已是最佳深度
 4. **Self-Attention 有微弱 F1 增益但犧牲 r** — 不建議常規使用
 
 ### 8.2 訓練層面
-5. **訓練 chunks 數量是 AHI r 的最大推手** — 比架構選擇重要 4 倍
+5. **訓練 chunks 數量是 AHI r 的最大推手** — 在同一架構族內，chunks 效應 (+0.043) 遠大於超參微調 (±0.01)
 6. **3000 chunks 是甜蜜點** — 超過後 diminishing returns
 7. **Learning rate 不敏感** — 0.0003~0.0008 都好 (見下圖)
 
 ![LR Sensitivity](charts/chart6_lr_sensitivity.png)
-8. **零病態 overfit** — 所有 36 trials 的 train-val gap < 0.10
+8. **零病態 overfit** — Round 3/3b 所有 36 trials 的 train-val gap < 0.10
 
 ### 8.3 工程層面
 9. **MPS (Apple Silicon) 跑 GRU 極慢** — 比 CUDA 慢 100 倍，GRU 實驗需用 NVIDIA GPU
-10. **Reproducibility 完美** — 重複 config 結果完全一致 (diff=0.0000)
+10. **Reproducibility 完美** — 3 組重複 config (trials 018/030, 023/029, 022/031) 結果完全一致 (diff=0.0000)
 
 ---
 
@@ -243,10 +253,10 @@ dropout:    0.15
 lr:         0.0005
 loss:       BCE (pos_weight=1.5)
 chunks:     3000
-參數量:     586,497 (0.59M)
+參數量:     1,315,969 (1.32M)
 ```
 
-**預期精簡訓練性能**: Event F1 ≈ 0.60, AHI r ≈ 0.94
+**精簡訓練性能 (30ep, 1-ensemble)**: Event F1 ≈ 0.60, AHI r (raw RDI) ≈ 0.94
 
 ---
 
@@ -254,10 +264,10 @@ chunks:     3000
 
 | 步驟 | 內容 | 預估時間 |
 |------|------|----------|
-| **B. Full Training** | 60 epochs, 3K chunks, 3-ensemble | ~6 hr |
-| **C. 5-fold CV** | 5 folds × 3 seeds = 15 runs | ~6 hr |
-| **D. AHI 校正** | Linear calibration RDI → AHI | 1 hr |
-| **E. 輔大醫院驗證** | 本地 PSG cross-domain test | TBD |
+| **A. Full Training** | 60 epochs, 3K chunks, 3-ensemble | ~6 hr |
+| **B. 5-fold CV** | 5 folds × 3 seeds = 15 runs | ~12 hr |
+| **C. AHI 校正** | Linear calibration RDI → AHI | 1 hr |
+| **D. 輔大醫院驗證** | 本地 PSG cross-domain test | TBD |
 
 ---
 
